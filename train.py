@@ -26,7 +26,7 @@ if (__name__ == "__main__"):
 
     input_shape = (448, 448, 3)
 
-    batch_size = 16
+    batch_size = 8
 
     epochs = 20
 

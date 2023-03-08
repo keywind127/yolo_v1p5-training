@@ -42,6 +42,9 @@ class YoloDataAugmenter:
         __should_flip_image = flipping_conditions.repeat(h * w * c, axis = 1).reshape((n, h, w, c))
         images = numpy.where(__should_flip_image, numpy.flip(images, axis = 2), images)
         for idx, should_flip_label in enumerate(flipping_conditions):
+            # skip flipping label if there are no bounding boxes 
+            if (labels[idx] is None):
+                continue 
             if (should_flip_label[0]):
                 labels[idx][..., 1:2] = (1.0 - labels[idx][..., 1:2])
         return (images, labels)
@@ -62,6 +65,12 @@ class YoloDataAugmenter:
 
             # (B, 5) { cls_idx, x, y, w, h }
             label = labels[idx] 
+
+            # skip augmenting the image and label altogether if there are no bounding boxes 
+            if (label is None):
+                augmented_images.append(image)
+                augmented_labels.append(label)
+                continue 
 
             # (B, 4) { sx, ex, sy, ey } [ xxyy format ]
             coord = numpy.concatenate([
@@ -171,13 +180,13 @@ class YoloData:
             loaded_label = []
             for line in loaded_data:
                 loaded_label.append(numpy.float32(list(map(float, filter("".__ne__, line.split(" "))))))
-            return numpy.stack(loaded_label) 
+            return ((numpy.stack(loaded_label)) if (len(loaded_label)) else (None))
         return [  load_label(filename) for filename in label_files  ]
     
     def _preprocess_labels(self, labels : List[ numpy.ndarray ]) -> numpy.ndarray:
         """
             Parameters:
-                [ 1 ] labels : numpy.ndarray (N, B, 5) [ [ { cls_idx, x, y, w, h } ] ]
+                [ 1 ] labels : list of numpy.ndarray (N, B, 5) [ [ { cls_idx, x, y, w, h } ] ]
             Returns:
                 [ 1 ] numpy.ndarray (N, S, S, C + 5)
         """
@@ -189,12 +198,15 @@ class YoloData:
                     [ 1 ] label : numpy.ndarray (S, S, C + 5)
             """
             label = numpy.zeros(shape = (self.S, self.S, self.C + 5), dtype = numpy.float32)
+            # return empty label matrix if no bounding boxes are found 
+            if (label_data is None):
+                return label 
             for line in label_data:
                 if (len(line) == 0):
                     continue 
                 (c, x, y, w, h) = (int(line[0]), *line[1:])
                 (u_x, u_y) = (int(x * self.S), int(y * self.S))
-                (n_x, n_y) = ((x - u_x) * self.S, (y - u_y) * self.S)
+                (n_x, n_y) = (min(1, max(0, x - u_x)) * self.S, min(1, max(0, y - u_y) * self.S))
                 label[u_y, u_x, c] = 1.0
                 label[u_y, u_x, self.C : self.C + 5] = numpy.float32([ 1.0, n_x, n_y, w, h ]) 
             return label 
@@ -216,7 +228,9 @@ class YoloData:
             ])
         return loaded_images
     
-    def _preprocess_images(self, images : numpy.ndarray) -> numpy.ndarray:
+    def _preprocess_images(self, images : numpy.ndarray, is_test_set : bool = False) -> numpy.ndarray:
+        if (is_test_set):
+            return images 
         return ((preprocess_input(images)) if (self.use_vgg19) else (images / 255.0))
 
     def initialize_generator(self, batch_size : int, image_folder : str, label_folder : str, max_images : Optional[ int ] = None) -> Tuple[ int, Iterator[ Tuple[ numpy.ndarray, numpy.ndarray ] ] ]:
@@ -229,6 +243,9 @@ class YoloData:
             self.find_files_in_folder(image_folder),
             self.find_files_in_folder(label_folder)
         )
+
+        assert len(image_filenames)
+        assert len(label_filenames)
 
         if (max_images is None):
             max_images = int(1e20)
@@ -254,7 +271,7 @@ class YoloData:
                         (images, labels) = data_augmenter.augment_images(images, labels)
 
                     (images, labels) = (
-                        self._preprocess_images(images),
+                        self._preprocess_images(images, is_test_set),
                         self._preprocess_labels(labels)
                     )
                     yield (
